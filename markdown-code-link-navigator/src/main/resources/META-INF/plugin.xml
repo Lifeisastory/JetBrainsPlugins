@@ -1,0 +1,20 @@
+<idea-plugin>
+    <id>com.melot.markdowncodelinknavigator</id>
+    <name>Markdown Code Link Navigator</name>
+    <vendor email="noreply@example.com">melot</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>org.intellij.plugins.markdown</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <psi.referenceContributor
+                language="Markdown"
+                implementation="com.melot.markdownnavigator.MarkdownCodeLinkReferenceContributor"/>
+        <gotoDeclarationHandler
+                implementation="com.melot.markdownnavigator.MarkdownCodeLinkGotoDeclarationHandler"/>
+        <applicationService
+                serviceInterface="org.intellij.plugins.markdown.ui.preview.accessor.MarkdownLinkOpener"
+                serviceImplementation="com.melot.markdownnavigator.MarkdownPreviewLinkOpener"
+                overrides="true"/>
+    </extensions>
+</idea-plugin>
