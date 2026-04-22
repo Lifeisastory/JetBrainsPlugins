@@ -16,6 +16,7 @@ import javax.swing.Icon
 import java.io.File
 import java.net.URI
 import java.net.URLDecoder
+import java.nio.file.Path
 import java.nio.charset.StandardCharsets
 
 internal data class MarkdownCodeLinkTarget(
@@ -104,6 +105,77 @@ internal object MarkdownCodeLinkParser {
 
         val extension = normalized.substringAfterLast('.', "").lowercase()
         return extension in knownCodeExtensions
+    }
+
+    fun parsePreviewAbsoluteTarget(rawValue: String): MarkdownCodeLinkTarget? {
+        val uri = runCatching { URI(rawValue.trim()) }.getOrNull() ?: return null
+        if (!uri.isAbsolute || !isSupportedPreviewUri(uri)) {
+            return null
+        }
+
+        val decodedPath = URLDecoder.decode(uri.path.orEmpty(), StandardCharsets.UTF_8).trim()
+        val decodedQuery = URLDecoder.decode(uri.query.orEmpty(), StandardCharsets.UTF_8).trim()
+        val decodedFragment = URLDecoder.decode(uri.fragment.orEmpty(), StandardCharsets.UTF_8).trim()
+        val candidates = buildPreviewTargetCandidates(decodedPath, decodedQuery, decodedFragment)
+
+        for (candidate in candidates) {
+            parse(candidate)?.let { return it }
+        }
+
+        return if (looksLikeLocalCodePath(decodedPath)) {
+            MarkdownCodeLinkTarget(path = decodedPath)
+        } else {
+            null
+        }
+    }
+
+    private fun isSupportedPreviewUri(uri: URI): Boolean {
+        return when (uri.scheme?.lowercase()) {
+            "file" -> true
+            "http", "https" -> {
+                val host = uri.host?.lowercase()
+                host == "localhost" || host == "127.0.0.1" || host == "::1"
+            }
+            else -> false
+        }
+    }
+
+    private fun buildPreviewTargetCandidates(
+        decodedPath: String,
+        decodedQuery: String,
+        decodedFragment: String,
+    ): List<String> {
+        val path = decodedPath.trim()
+        if (path.isEmpty()) {
+            return emptyList()
+        }
+
+        val fragmentSuffixes = buildList {
+            if (decodedFragment.isNotEmpty()) {
+                add(decodedFragment)
+                if (!decodedFragment.startsWith("#")) {
+                    add("#$decodedFragment")
+                }
+            }
+        }.distinct()
+
+        val candidates = linkedSetOf<String>()
+        candidates += path
+        fragmentSuffixes.forEach { suffix ->
+            candidates += path + suffix
+        }
+
+        if (decodedQuery.isNotEmpty()) {
+            val queryLineMatch = Regex("""(?:^|[?&])(L\d+(?:-L?\d+)?)$""", RegexOption.IGNORE_CASE)
+                .find(decodedQuery)
+                ?.groupValues
+                ?.getOrNull(1)
+            if (queryLineMatch != null) {
+                candidates += "$path#$queryLineMatch"
+            }
+        }
+
+        return candidates.toList()
     }
 }
 
@@ -259,39 +331,170 @@ internal fun navigateToAbsoluteRawTarget(
     return true
 }
 
-internal fun toProjectRelativeRawTarget(project: Project, rawValue: String): String? {
-    val target = MarkdownCodeLinkParser.parse(rawValue) ?: return null
-    val rawPath = target.path.trim()
-    if (!rawPath.startsWith("file://", ignoreCase = true)) {
-        return null
-    }
+private fun MarkdownCodeLinkTarget.withPath(path: String): MarkdownCodeLinkTarget {
+    return copy(path = path)
+}
 
-    val absoluteFile = runCatching { File(URI(rawPath)).canonicalFile }.getOrNull() ?: return null
-    val projectBase = project.basePath?.let { File(it).canonicalFile } ?: return null
-
-    val absolutePath = absoluteFile.invariantSeparatorsPath
-    val projectBasePath = projectBase.invariantSeparatorsPath.trimEnd('/')
-    if (!absolutePath.startsWith("$projectBasePath/")) {
-        return null
-    }
-
-    val relativePath = absolutePath.removePrefix("$projectBasePath/")
+private fun MarkdownCodeLinkTarget.toRawValue(): String {
     return buildString {
-        append(relativePath)
-        target.startLine?.let { startLine ->
+        append(path)
+        startLine?.let { startLine ->
             append("#L")
             append(startLine)
-            target.endLine?.let { endLine ->
+            endLine?.let { endLine ->
                 append("-L")
                 append(endLine)
             }
-        } ?: target.column?.let { column ->
+        } ?: column?.let { column ->
             append(':')
-            append(target.startLine ?: 1)
+            append(this@toRawValue.startLine ?: 1)
             append(':')
             append(column)
         }
     }
+}
+
+internal fun toContextRelativeRawTarget(
+    project: Project,
+    markdownFiles: Iterable<VirtualFile>,
+    rawValue: String,
+): String? {
+    val target = MarkdownCodeLinkParser.parse(rawValue)
+        ?: MarkdownCodeLinkParser.parsePreviewAbsoluteTarget(rawValue)
+        ?: return null
+    val projectBase = project.basePath?.let { File(it).canonicalFile } ?: return null
+    val relativePath = target.path.toContextRelativePath(markdownFiles, projectBase) ?: return null
+
+    return target.withPath(relativePath).toRawValue()
+}
+
+private fun String.toContextRelativePath(
+    markdownFiles: Iterable<VirtualFile>,
+    projectBase: File,
+): String? {
+    val rawPath = trim()
+    if (rawPath.isEmpty()) {
+        return null
+    }
+
+    val projectBasePath = projectBase.invariantSeparatorsPath.trimEnd('/')
+
+    fun File.toProjectRelativePathOrNull(): String? {
+        val absolutePath = invariantSeparatorsPath
+        if (!absolutePath.startsWith("$projectBasePath/")) {
+            return null
+        }
+
+        return absolutePath.removePrefix("$projectBasePath/")
+    }
+
+    if (rawPath.startsWith("file://", ignoreCase = true)) {
+        val absoluteFile = runCatching { File(URI(rawPath)).canonicalFile }.getOrNull() ?: return null
+        markdownFiles.forEach { markdownFile ->
+            absoluteFile.toRelativePathOrNull(markdownFile)?.let { return it }
+        }
+        return absoluteFile.toProjectRelativePathOrNull()
+    }
+
+    rawPath.toAbsoluteLocalFileOrNull()?.let { absoluteFile ->
+        markdownFiles.forEach { markdownFile ->
+            absoluteFile.toRelativePathOrNull(markdownFile)?.let { return it }
+        }
+        absoluteFile.toProjectRelativePathOrNull()?.let { return it }
+    }
+
+    val uri = runCatching { URI(rawPath) }.getOrNull() ?: return null
+    if (!uri.isAbsolute) {
+        return null
+    }
+
+    val decodedPath = runCatching {
+        URLDecoder.decode(uri.path.orEmpty(), StandardCharsets.UTF_8)
+    }.getOrDefault(uri.path.orEmpty())
+
+    val candidates = buildList {
+        val trimmedPath = decodedPath.trim()
+        if (trimmedPath.isNotEmpty()) {
+            add(trimmedPath)
+            if (trimmedPath.startsWith("/") && trimmedPath.length > 1) {
+                add(trimmedPath.removePrefix("/"))
+            }
+
+            // Only use suffix fallback for preview absolute URLs that include extra leading segments.
+            // Root-relative markdown links like `/lib/foo.dart` should prefer exact project-root resolution.
+            if (!trimmedPath.startsWith("/")) {
+                trimmedPath.removePrefix("/")
+                    .split('/')
+                    .filter { it.isNotEmpty() }
+                    .forEachIndexed { index, _ ->
+                        val suffix = trimmedPath.removePrefix("/")
+                            .split('/')
+                            .drop(index)
+                            .joinToString("/")
+                        if (suffix.isNotEmpty()) {
+                            add(suffix)
+                        }
+                    }
+            }
+        }
+    }.distinct()
+
+    for (candidate in candidates) {
+        for (markdownFile in markdownFiles) {
+            resolveRelativeToMarkdown(candidate, markdownFile)?.let { return it }
+        }
+    }
+
+    for (candidate in candidates) {
+        val resolvedFile = runCatching { File(projectBase, candidate).canonicalFile }.getOrNull() ?: continue
+        resolvedFile.toProjectRelativePathOrNull()?.let { return it }
+    }
+
+    return null
+}
+
+private fun File.toRelativePathOrNull(markdownFile: VirtualFile): String? {
+    val markdownDir = markdownFile.parent?.path?.let { File(it).canonicalFile } ?: return null
+    return runCatching {
+        markdownDir.toPath()
+            .relativize(toPath())
+            .invariantSeparatorsPath()
+    }.getOrNull()
+}
+
+private fun resolveRelativeToMarkdown(candidate: String, markdownFile: VirtualFile): String? {
+    val markdownDir = markdownFile.parent?.path?.let { File(it).canonicalFile } ?: return null
+    val resolvedFile = runCatching { File(markdownDir, candidate).canonicalFile }.getOrNull() ?: return null
+    if (!resolvedFile.exists()) {
+        return null
+    }
+
+    return resolvedFile.toRelativePathOrNull(markdownFile)
+}
+
+private fun Path.invariantSeparatorsPath(): String {
+    return toString().replace('\\', '/')
+}
+
+private fun String.toAbsoluteLocalFileOrNull(): File? {
+    val normalizedPath = trim()
+    if (normalizedPath.isEmpty()) {
+        return null
+    }
+
+    val directFile = runCatching { File(normalizedPath) }.getOrNull()
+    if (directFile != null && directFile.isAbsolute) {
+        return runCatching { directFile.canonicalFile }.getOrElse { directFile.absoluteFile }
+    }
+
+    val withoutLeadingSlash = normalizedPath.removePrefix("/")
+    val windowsStylePath = Regex("""^[A-Za-z]:[\\/].*""")
+    if (windowsStylePath.matches(withoutLeadingSlash)) {
+        val windowsFile = File(withoutLeadingSlash)
+        return runCatching { windowsFile.canonicalFile }.getOrElse { windowsFile.absoluteFile }
+    }
+
+    return null
 }
 
 internal fun navigateToRawTarget(

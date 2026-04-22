@@ -67,3 +67,18 @@
 - `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 如果你接下来要改功能，这个文件最值得做二层细化。
 - “链接解析规则”: 如果你关心支持哪些 Markdown 链接格式，优先细化 `MarkdownCodeLinkParser` 与 `findTargetInLine`。
 - “预览面板行为”: 如果你关心点击预览为何成功或失败，优先细化 `MarkdownPreviewLinkOpener.kt` 与 `plugin.xml` 的服务覆盖关系。
+## 本次确认更新
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 预览模式会先把项目内绝对 URI 归一化回项目相对代码路径，覆盖被预览层解析后的 `../` 同父目录跳转场景。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownPreviewLinkOpener.kt`: 预览跳转按字符串值判断是否发生归一化，避免误用引用相等判断。
+- `build.gradle.kts`: 版本声明已去重，并提升到 `0.1.2`。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownPreviewLinkOpener.kt`: 预览跳转现在会先按当前 Markdown 文件解析，再尝试其他已打开的 Markdown 上下文。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 预览链接归一化现在明确按“当前 Markdown 目录优先，项目根目录回退”的顺序解析。
+- `build.gradle.kts`: 本轮修复后版本继续提升到 `0.1.3`。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 预览层生成的 `localhost` / `file://` 绝对 URL 现在也会先还原成代码路径，再进入本地导航逻辑。
+- `build.gradle.kts`: 本轮修复后版本继续提升到 `0.1.4`。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 同父目录兄弟文件夹的目标现在会计算真实相对路径，因此 `../lib/...` 这类预览跳转不再被误判为浏览器链接。
+- `build.gradle.kts`: 本轮修复后版本继续提升到 `0.1.5`。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 预览绝对 URL 解出的磁盘绝对路径现在也会按本地文件处理，覆盖 `localhost` 预览路径先丢失 scheme 再进入归一化的情况。
+- `build.gradle.kts`: 本轮修复后版本继续提升到 `0.1.6`。
+- `src/main/kotlin/com/melot/markdownnavigator/MarkdownCodeLinkSupport.kt`: 预览绝对 URL 现在会同时从 path、fragment、query 中恢复 `#L...` 行号信息，并收紧 `/...` 根路径的候选解析，避免跳到错误位置。
+- `build.gradle.kts`: 本轮修复后版本提升到 `0.1.8`。
